@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <title>トップページ</title>
+</head>
+<body>
+  <h2>score.db ファイルを選択してください:</h2>
+  <input type="file" id="file-input-score" />
+  
+  <h2>songdata.db ファイルを選択してください:</h2>
+  <input type="file" id="file-input-song" />
+  
+  <button id="convert-button">Convert to JSON</button>
+  <pre id="output"></pre>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.0/sql-wasm.js"></script>
+<script>
+
+
+
+
+function sigmoid(x) {
+  return 1 / (1 + Math.exp(-x));
+}
+
+// ベイズ版：log尤度 + log事前
+function logPosterior(theta, data, a = 1) {
+  let logLik = 0;
+  for (const item of data) {
+    const b = item.difficulty;
+    const u = item.result;
+    const p = sigmoid(a * (theta - b));
+    logLik += u * Math.log(p) + (1 - u) * Math.log(1 - p);
+  }
+  // 事前分布（標準正規分布）の対数密度
+  const logPrior = -0.5 * theta * theta;
+  return logLik + logPrior;
+}
+
+// MAP推定（勾配上昇）
+function estimateThetaMAP(data, a = 1, maxIter = 10000, lr = 0.005) {
+  let theta = 0; // 初期値
+  for (let i = 0; i < maxIter; i++) {
+    let grad = 0;
+    for (const item of data) {
+      const b = item.difficulty;
+      const u = item.result;
+      const p = sigmoid(a * (theta - b));
+      grad += a * (u - p);
+    }
+    // 事前分布の導関数（標準正規 → -θ）
+    grad += -theta;
+    theta += lr * grad;
+  }
+  return theta;
+}
+
+
+// 例: プレイヤーの回答データ
+const playerData = [
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 0.1, result: 1 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  { difficulty: 5.0, result: 0 },
+  // 未プレイの譜面は含めない
+];
+console.log(playerData);
+
+const filtered = playerData.filter(item => item.result !== null);
+const estimatedTheta = estimateThetaMAP(filtered);
+
+console.log("MAPによる推定実力（θ）:", estimatedTheta);
+
+
+
+let SQL;
+// sql.jsの初期化
+initSqlJs({
+    locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.6.0/${file}`
+}).then(async function (sql) {
+    SQL = sql;
+
+    // ボタンがクリックされた時の処理
+    document.getElementById('convert-button').addEventListener('click', function() {
+        const fileInputScore = document.getElementById('file-input-score');
+        const fileInputSong = document.getElementById('file-input-song');
+        const fileScore = fileInputScore.files[0];
+        const fileSong = fileInputSong.files[0];
+
+        if (fileScore && fileSong) {
+            const readerScore = new FileReader();
+            const readerSong = new FileReader();
+
+            readerScore.onload = function(e) {
+                const bufferScore = e.target.result;
+                const dbScore = new SQL.Database(new Uint8Array(bufferScore));
+
+                // score.dbのSQL実行
+                const resScore = dbScore.exec("SELECT sha256, clear FROM score");
+
+                readerSong.onload = function(e) {
+                    const bufferSong = e.target.result;
+                    const dbSong = new SQL.Database(new Uint8Array(bufferSong));
+
+                    // songdata.dbのSQL実行
+                    const resSong = dbSong.exec("SELECT sha256, title, subtitle FROM song");
+                    // データ整形
+                    const resSong2 = TitleMarge(resSong);
+                    const result2 = mergeScoreAndSong(resScore, resSong2);
+                    fetchDifficultData(result2);
+                };
+
+                readerSong.readAsArrayBuffer(fileSong);
+            };
+
+            readerScore.readAsArrayBuffer(fileScore);
+
+        } else {
+            alert('両方のSQLiteファイルを選択してください');
+        }
+    });
+});
+
+function TitleMarge(songdata_db) {
+  return songdata_db.map(entry => {
+    const titleIndex = entry.columns.indexOf("title");
+    const subtitleIndex = entry.columns.indexOf("subtitle");
+
+    const updatedValues = entry.values.map(row => {
+      const subtitle = row[subtitleIndex];
+
+      // subtitleがあれば title + " " + subtitle に結合
+      if (subtitle) {
+        row[titleIndex] = `${row[titleIndex]} ${subtitle}`;
+      }
+
+      // title内で "[" の前にスペースがなければ追加
+      row[titleIndex] = row[titleIndex].replace(/([^\s])(\[)/g, "$1 $2");
+
+      // subtitleを削除
+      row.splice(subtitleIndex, 1);
+
+      return row;
+    });
+
+    const updatedColumns = entry.columns.filter(col => col !== "subtitle");
+
+    return {
+      columns: updatedColumns,
+      values: updatedValues
+    };
+  });
+}
+
+function mergeScoreAndSong(resScoreArray, resSong2Array) {
+  // 1. resScore整形
+  const rawScore = resScoreArray[0];
+  if (!rawScore.columns || !rawScore.values) {
+    console.error("Invalid resScore format", rawScore);
+    return [];
+  }
+  const scoreKeys = rawScore.columns;
+  const resScore = rawScore.values.map(row =>
+    Object.fromEntries(scoreKeys.map((key, i) => [key, row[i]]))
+  );
+
+  // 2. resSong2整形
+  const rawSong = resSong2Array[0];
+  if (!rawSong.columns || !rawSong.values) {
+    console.error("Invalid resSong2 format", rawSong);
+    return [];
+  }
+  const songKeys = rawSong.columns;
+  const resSong2 = rawSong.values.map(row =>
+    Object.fromEntries(songKeys.map((key, i) => [key, row[i]]))
+  );
+
+  // 3. 曲情報をsha256でマップ
+  const songMap = new Map(resSong2.map(song => [song.sha256, song.title]));
+
+  // 4. マッチングして整形
+  return resScore
+    .filter(score => songMap.has(score.sha256))
+    .map(score => ({
+      title: songMap.get(score.sha256),
+      clear: score.clear
+    }));
+}
+
+function transformData(data) {
+  return data
+    .filter(item => {
+      // 削除対象：clear が 0, 2, 3 または undefined またはその他の条件外
+      const invalidValues = [0, 2, 3, undefined, null];
+      if (invalidValues.includes(item.clear)) return false;
+      if (typeof item.clear !== "number" || item.clear < 1 || item.clear > 10) return false;
+      return true;
+    })
+    .map(item => {
+      const newItem = { ...item };
+      if (newItem.clear === 1) newItem.clear = 0;
+      else if (newItem.clear === 4) newItem.clear = 1;
+      else if (newItem.clear === 5) newItem.clear = 2;
+      else if (newItem.clear === 6 || newItem.clear === 7) newItem.clear = 3;
+      else if ([8, 9, 10].includes(newItem.clear)) newItem.clear = 4;
+      return newItem;
+    });
+}
+
+async function LoadDifficultData() {
+  const files = [
+    { file: 'Satellite_easy.json', key: 'easy' },
+    { file: 'Satellite_normal.json', key: 'normal' },
+    { file: 'Satellite_hard.json', key: 'hard' },
+    { file: 'Satellite_fullcombo.json', key: 'fullcombo' },
+  ];
+
+  const mergedData = {};
+
+  for (const { file, key } of files) {
+    const response = await fetch(file);
+    const data = await response.json();
+
+    data.forEach(entry => {
+      const title = entry["TITLE"];
+      const level = entry["推定LEVEL"];
+
+      if (!mergedData[title]) {
+        // 初めて見たタイトル → 空のデータ構造を作成
+        mergedData[title] = {
+          title: title,
+          easy: "",
+          normal: "",
+          hard: "",
+          fullcombo: ""
+        };
+      }
+
+      // 対応する難易度の欄に推定LEVELをセット
+      mergedData[title][key] = level;
+    });
+  }
+
+  // 結果を配列で返す
+  const resultArray = Object.values(mergedData);
+  return resultArray;
+}
+
+
+
+async function fetchDifficultData(result2) {
+
+  try {
+    const clearData = transformData(result2);
+    const difficult_data = await LoadDifficultData();
+    
+    if (!difficult_data) {
+      throw new Error("Difficult data is empty or undefined.");
+    }
+
+    const result = generateResultData(clearData, difficult_data);
+    
+    // 結果をJSONとして表示
+    document.getElementById('output').textContent = JSON.stringify(result, null, 2);
+
+    const filtered = result.filter(item => item.result !== null);
+    const estimatedTheta = estimateThetaMAP(filtered);
+    console.log("MAPによる推定実力（θ）:", estimatedTheta);
+
+    return result;
+  } catch (error) {
+    console.error("Error in fetchDifficultData:", error);
+    return null;  // or some fallback data
+  }
+} 
+
+
+
+function generateResultData(clearData, difficult_data) {
+  const result = [];
+
+  clearData.forEach(clearItem => {
+    const difficultyItem = difficult_data.find(d => d.title === clearItem.title);
+
+    if (!difficultyItem) return;
+
+    const { easy, normal, hard, fullcombo } = difficultyItem;
+    const clear = clearItem.clear;
+
+    // バリデーション用ヘルパー関数
+    const isValid = (val) => val !== undefined && val !== null && val !== '';
+
+    switch (clear) {
+      case 0:
+        if (isValid(easy)) {
+          result.push({ difficulty: parseFloat(easy), result: 0 });
+        }
+        break;
+      case 1:
+        if (isValid(easy) && isValid(normal)) {
+          result.push({ difficulty: parseFloat(easy), result: 1 });
+          result.push({ difficulty: parseFloat(normal), result: 0 });
+        }
+        break;
+      case 2:
+        if (isValid(normal) && isValid(hard)) {
+          result.push({ difficulty: parseFloat(normal), result: 1 });
+          result.push({ difficulty: parseFloat(hard), result: 0 });
+        }
+        break;
+      case 3:
+        if (isValid(hard)) {
+          result.push({ difficulty: parseFloat(hard), result: 1 });
+        }
+        break;
+      case 4:
+        if (isValid(fullcombo)) {
+          result.push({ difficulty: parseFloat(fullcombo), result: 1 });
+        } else if (isValid(hard)) {
+          result.push({ difficulty: parseFloat(hard), result: 1 });
+        }
+        break;
+    }
+  });
+
+  return result;
+}
+
+
+
+
+
+
+</script>
+</body>
+</html>
