@@ -39,7 +39,7 @@ function logPosterior(theta, data, a = 1) {
 }
 
 // MAP推定（勾配上昇）
-function estimateThetaMAP(data, a = 1, maxIter = 10000, lr = 0.005) {
+function estimateThetaMAP(data, a = 1, maxIter = 10000, lr = 0.001) {
   let theta = 0; // 初期値
   for (let i = 0; i < maxIter; i++) {
     let grad = 0;
@@ -56,37 +56,6 @@ function estimateThetaMAP(data, a = 1, maxIter = 10000, lr = 0.005) {
   return theta;
 }
 
-
-// 例: プレイヤーの回答データ
-const playerData = [
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 0.1, result: 1 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  { difficulty: 5.0, result: 0 },
-  // 未プレイの譜面は含めない
-];
-console.log(playerData);
-
-const filtered = playerData.filter(item => item.result !== null);
-const estimatedTheta = estimateThetaMAP(filtered);
-
-console.log("MAPによる推定実力（θ）:", estimatedTheta);
 
 
 
@@ -278,11 +247,11 @@ async function fetchDifficultData(result2) {
     const result = generateResultData(clearData, difficult_data);
     
     // 結果をJSONとして表示
-    document.getElementById('output').textContent = JSON.stringify(result, null, 2);
+    //document.getElementById('output').textContent = JSON.stringify(result, null, 2);
 
     const filtered = result.filter(item => item.result !== null);
     const estimatedTheta = estimateThetaMAP(filtered);
-    console.log("MAPによる推定実力（θ）:", estimatedTheta);
+    document.getElementById('output').textContent = "satellite_recommend : " + estimatedTheta
 
     return result;
   } catch (error) {
